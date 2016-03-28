@@ -1,0 +1,15 @@
+[package]
+name = "rust-parallel-download"
+version = "0.1.0"
+authors = ["Joel Wright <joel.wright@gmail.com>"]
+
+[dependencies]
+docopt = "0.6"
+hyper = "0.6.15"
+chrono = "0.2"
+rustc-serialize = "0.3"
+url = "0.2"
+
+# [dependencies.chrono]
+# version = "*"
+# features = ["rustc-serialize"]
