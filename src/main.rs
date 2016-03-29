@@ -5,7 +5,8 @@ extern crate chrono;
 
 use docopt::Docopt;
 use hyper::Client;
-use hyper::client::{response, IntoUrl, RequestBuilder}
+use hyper::client::{response, IntoUrl, RequestBuilder};
+use hyper::header::Headers;
 use hyper::method::Method;
 use hyper::status::StatusCode;
 use std::env;
@@ -50,36 +51,42 @@ fn main() {
     let url = get_arg(args.flag_url, String::from("RP_URL")).unwrap();
     let out = get_arg(args.flag_output, String::from("RP_OUT")).unwrap();
 
-    let client = Client::new();
-    let head_request = try!(match url.into_url() {
-        Ok(_u) => {
-            let mut headers = Headers::new();
-            Ok(client.request(Method::Head, _u))
+    let client = Arc::new(Client::new());
+
+    let head_request = match url.into_url() {
+        Ok(_u) => client.head(_u),
+        Err(_) => {
+            println!("{}", "Failed to parse URL");
+            std::process::exit(1);
         }
-        _ => Err(String::from("Failed to parse URL"))
-    })
-    let resp = try!(match head_request.send() {
-        Ok(r) => Ok(r),
-        _ => Err(String::from("Could not HEAD the given URL"))
-    })
+    };
 
-    let thread_action = thread::spawn(move || {
-        let c = client.clone();
-        let path = String::from("/jjw");
-        match sc.head(&path) {
-            Ok(resp) => {
-                assert_eq!(resp.status, StatusCode::NoContent);
-                for item in resp.headers.iter() {
-                    println!("{:?}", item);
-                }
+    let resp = match head_request.send() {
+        Ok(r) => r,
+        Err(_) => {
+            println!("{}", "Could not HEAD the given URL");
+            std::process::exit(1);
+        }
+    };
+
+    // let c = client.clone();
+    // let path = String::from("/jjw");
+    match client.head(&url).send() {
+        Ok(resp) => {
+            assert_eq!(resp.status, StatusCode::NoContent);
+            for item in resp.headers.iter() {
+                println!("{}", item);
             }
-            Err(s) => println!("{}", s)
-        };
-    });
-
-    let result = thread_action.join();
-    match result {
-        Err(_) => println!("All went boom"),
-        _ => ()
-    }
+        }
+        Err(s) => println!("{}", s)
+    };
+    // let thread_action = thread::spawn(move || {
+    //
+    // });
+    //
+    // let result = thread_action.join();
+    // match result {
+    //     Err(_) => println!("All went boom"),
+    //     _ => ()
+    // }
 }

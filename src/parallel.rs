@@ -50,7 +50,7 @@ impl Download {
         self.send.send(());
     }
 
-    pub fn download(&mut self) {
+    pub fn download(&mut self) -> Vec<u8> {
         /// Start performing the actual download
         ///
         /// Make the request, then read into the local
@@ -212,12 +212,12 @@ impl Read for ParallelDownload {
         current_buf_sl = &current_buf[.. _ln];
         buf_sl.clone_from_slice(current_buf_sl);
 
-        if _ln == buf.len {
+        if _len == buf.len {
             self.current_buf = None;
         } else {
-            self.current_buf = Some(&current_buf[_ln ..]);
-        }
+            self.current_buf = Some(&current_buf[_len ..]);
+        };
 
-        Ok(_ln)
+        Ok(_len)
     }
 }
