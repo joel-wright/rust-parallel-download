@@ -1,14 +1,16 @@
-use hyper::header::{Headers, Range, ContentLength};
+use hyper::header::{Headers, Range, ContentLength, ByteRangeSpec};
 use hyper::method::Method;
+use hyper::Client;
 //use hyper::client::request;
 use hyper::client::response;
 use hyper::Url;
 
 use std::cmp;
 use std::collections::LinkedList;
-use std::io::Read;
-use std::sync::mpsc::channel;
+use std::io::{Error, Read};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::thread;
+use std::thread::Thread;
 
 pub struct Download {
     client: Client,
@@ -18,9 +20,9 @@ pub struct Download {
 
     buffer: Vec<u8>,
     bytes_read: u32,      // index of last byte for which a read has been scheduled
-    read_size: mut u32,   // size of individual reads from the socket
-    kill: Sender,         // Sender and receiver are used internally
-    recv: Receiver,       // to allow responsive shutdown
+    read_size: u32,       // size of individual reads from the socket
+    kill: Sender<()>,         // Sender and receiver are used internally
+    recv: Receiver<()>,       // to allow responsive shutdown
 }
 
 impl Download {
@@ -30,14 +32,14 @@ impl Download {
         let b: Vec<u8> = Vec::with_capacity((size as usize));
 
         Download {
-            client: Client,
+            client: client,
             url: url,
             start: start,
             size: size,
             buffer: b,
             bytes_read: 0,
-            read_size: 1024**2,
-            send: tx,
+            read_size: 1024*1024,
+            kill: tx,
             recv: rx
         }
     }
@@ -47,22 +49,22 @@ impl Download {
     }
 
     pub fn kill(&mut self) {
-        self.send.send(());
+        self.kill.send(());
     }
 
     pub fn download(&mut self) -> Vec<u8> {
-        /// Start performing the actual download
-        ///
-        /// Make the request, then read into the local
-        /// storage buffer. During the download monitor
-        /// for calls to kill.
+        // Start performing the actual download
+        //
+        // Make the request, then read into the local
+        // storage buffer. During the download monitor
+        // for calls to kill.
 
         let mut headers = Headers::new();
         let r_start = self.start;
         let r_end = r_start + (self.size as u64) - 1;
         headers.set(
             Range::Bytes(
-                vec![ByteRangeSpec::FromTo(r_start, r_end)
+                vec![ByteRangeSpec::FromTo(r_start, r_end)]
             )
         );
         let body = self.client.get(self.url).headers(headers).send();
@@ -72,19 +74,19 @@ impl Download {
         };
 
         // start reading the request, with checks for abort
-        while (self.bytes_read < self.size) {
+        while self.bytes_read < self.size {
             match self.recv.try_recv() {
-                Ok(_) | Err(comm::Disconnected) => {
+                Ok(_) | Err(TryRecvError::Disconnected) => {
                     // Any communication means stop
                     // TODO: close connection?
                     break;
                 }
-                Err(comm::Empty) => {
+                Err(TryRecvError::Empty) => {
                     // The actual work goes here
                     let b_start = self.bytes_read;
                     let b_end = b_start + self.chunk_size - 1;
                     let mut range_buffer = &self.buffer[b_start..b_end];
-                    res.read(&mut b);
+                    res.read(&mut range_buffer);  // TODO: range might be smaller
                     self.bytes_read += self.read_size;
                 }
             };
@@ -98,21 +100,25 @@ pub struct ParallelDownload {
     url: String,
     client: Client,
     downloaders: LinkedList<Thread>,
-    current_buf: Option<&Vec<u8>>,
-    chunk_size: u64
+    current_buf: Option<Vec<u8>>,
+    chunk_size: u64,
+    next_start_byte: u64,
+    content_length: u64
 }
 
-impl ParallelDownload<String> {
-    pub fn new(url: String) -> ParallelDownload<String> {
+impl ParallelDownload {
+    pub fn new(url: String) -> ParallelDownload {
         let client = Client::new();
-        let downloader_list = LinkedList<Download>::new();
+        let downloader_list: LinkedList<Download> = LinkedList::new();
 
         ParallelDownload {
             url: url,
             client: client,
             downloaders: downloader_list,
             current_buf: None,
-            chunk_size: 20*1024**2  // TODO: configure
+            chunk_size: 20*1024**2,  // TODO: configure
+            next_start_byte: 0,
+            content_length: -1
         }
     }
 
@@ -124,11 +130,11 @@ impl ParallelDownload<String> {
 
     fn try_start_thread(&mut self, start_byte: u64, content_length: u64)
             -> Option<u64> {
-        /// Attempt to create a new download thread for a given
-        /// start byte.
-        ///
-        /// Some(end_byte) indicates that a thread has been created
-        /// None indicates that the content_length has been reached
+        // Attempt to create a new download thread for a given
+        // start byte.
+        //
+        // Some(end_byte) indicates that a thread has been created
+        // None indicates that the content_length has been reached
         if start_byte >= content_length {
             return None;
         }
@@ -139,12 +145,12 @@ impl ParallelDownload<String> {
                 _b = content_length
             };
             _b
-        }
+        };
 
         let _c = self.client.clone();
         let _u = self.url.clone();
-        let _s = self.chunk_size.clone()
-        let _d = Download(_c, _u, start_byte, _s);
+        let _s = self.chunk_size.clone();
+        let _d = Download::new(_c, _u, start_byte, _s);
         let _dl_thread = thread::spawn(|_d| {
             // Start the download, and return the full buffer when complete
             _d.download()
@@ -157,7 +163,7 @@ impl ParallelDownload<String> {
     fn start_download(&mut self) {
         // head to get size and range req support
         let head_request = try!(match self.url.into_url() {
-            Ok(_u) => Ok(self.client.head(_u))
+            Ok(_u) => Ok(self.client.head(_u)),
             Err(s) => Err(String::from("Failed to parse URL"))
         });
         let head_resp = try!(match head_request.send() {
@@ -165,29 +171,32 @@ impl ParallelDownload<String> {
             _ => Err(String::from("Could not HEAD the given URL"))
         });
         // get size from headers
-        let content_length = try!(match head_resp.headers.get(ContentLength) {
-            Some(_cl) => _cl.deref()  // : & u64
+        self.content_length = try!(match head_resp.headers.get(ContentLength) {
+            Some(_cl) => _cl.deref(),  // : & u64
             None => Err(String::from("No content length found"))
         });
 
         // start filling the thread pools and downloads
         let thread_count = 0;
         let end_byte: u64 = 0;
-        while thread_count < max and end_byte < content_length {
+        let max = 10;
+        while (thread_count < max) && (end_byte < self.content_length) {
             let start_byte: u64 = end_byte;
-            end_byte = match self.try_start_thread(start_byte, content_length) {
-                None => content_length;
+            end_byte = match self.try_start_thread(start_byte, self.content_length) {
+                None => self.content_length,
                 Some(_u) => {
                     thread_count += 1;
                     _u
                 }
             };
         }
+
+        self.next_start_byte = end_byte;
     }
 }
 
 impl Read for ParallelDownload {
-    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         // read buf.len() bytes into buf
         let current_buf = match self.current_buf {
             None => {
@@ -201,15 +210,23 @@ impl Read for ParallelDownload {
                         self.kill();
                         return Err(_e);
                     },
-                    Ok(buf) => buf
+                    Ok(buf) => {
+                        // If we've got a result, it's time to kick off
+                        // a new thread (if possible)
+                        self.next_start_byte = self.try_start_thread(
+                            self.next_start_byte, self.content_length
+                        );
+                        buf
+                    }
                 };
+                d_result
             },
             Some(_b) => _b
         };
 
-        let _ln = cmp::min(buf.len(), current_buf.len());
-        buf_sl = &buf[.. _ln];
-        current_buf_sl = &current_buf[.. _ln];
+        let _len = cmp::min(buf.len(), current_buf.len());
+        let buf_sl = &buf[.. _len];
+        let current_buf_sl = &current_buf[.. _len];
         buf_sl.clone_from_slice(current_buf_sl);
 
         if _len == buf.len {

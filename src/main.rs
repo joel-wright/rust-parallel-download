@@ -13,6 +13,9 @@ use std::env;
 use std::thread;
 use std::sync::Arc;
 
+mod parallel;
+use parallel::ParallelDownload;
+
 const USAGE: &'static str = "
 Usage: swift [options] [<command>]
 
@@ -69,8 +72,6 @@ fn main() {
         }
     };
 
-    // let c = client.clone();
-    // let path = String::from("/jjw");
     match client.head(&url).send() {
         Ok(resp) => {
             assert_eq!(resp.status, StatusCode::NoContent);
@@ -80,6 +81,11 @@ fn main() {
         }
         Err(s) => println!("{}", s)
     };
+
+    let download = ParallelDownload::new(url.clone());
+
+    // let c = client.clone();
+    // let path = String::from("/jjw");
     // let thread_action = thread::spawn(move || {
     //
     // });
