@@ -151,7 +151,7 @@ impl ParallelDownload {
         Some(end_byte)  // return the new end_byte
     }
 
-    fn start_download(&mut self) -> Result<(), String> {
+    pub fn start_download(&mut self) -> Result<(), String> {
         // head to get size and range req support
         //let head_request = try!(match Url::from_str(&self.url) {
         //    Ok(_u) => Ok(self.client.head(_u)),

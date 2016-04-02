@@ -5,12 +5,10 @@ extern crate chrono;
 
 use docopt::Docopt;
 use hyper::Client;
-use hyper::client::{response, IntoUrl, RequestBuilder};
-use hyper::header::Headers;
-use hyper::method::Method;
 use hyper::status::StatusCode;
+
 use std::env;
-use std::thread;
+use std::io::Read;
 use std::sync::Arc;
 
 mod parallel;
@@ -56,22 +54,6 @@ fn main() {
 
     let client = Arc::new(Client::new());
 
-    let head_request = match url.into_url() {
-        Ok(_u) => client.head(_u),
-        Err(_) => {
-            println!("{}", "Failed to parse URL");
-            std::process::exit(1);
-        }
-    };
-
-    let resp = match head_request.send() {
-        Ok(r) => r,
-        Err(_) => {
-            println!("{}", "Could not HEAD the given URL");
-            std::process::exit(1);
-        }
-    };
-
     match client.head(&url).send() {
         Ok(resp) => {
             assert_eq!(resp.status, StatusCode::NoContent);
@@ -82,17 +64,23 @@ fn main() {
         Err(s) => println!("{}", s)
     };
 
-    let download = ParallelDownload::new(url.clone());
+    let mut download = ParallelDownload::new(url.clone());
+    let sd = download.start_download();
+    match sd {
+        Err(s) => {
+            println!("{}", s);
+            std::process::exit(1);
+        }
+        _ => {
+            // Simple attempt to use the download
+            let mut b = [0,0,0,0];
+            let nr = download.read(&mut b);
+            match nr {
+                Err(_) => println!("{}", "Failed to download"),
+                Ok(n) => println!("{} bytes read", n)
+            }
 
-    // let c = client.clone();
-    // let path = String::from("/jjw");
-    // let thread_action = thread::spawn(move || {
-    //
-    // });
-    //
-    // let result = thread_action.join();
-    // match result {
-    //     Err(_) => println!("All went boom"),
-    //     _ => ()
-    // }
+            // TODO: Download URL and write to 'out'
+        }
+    }
 }
