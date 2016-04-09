@@ -57,7 +57,7 @@ impl Download {
             Ok(res) => res,
             Err(e) => {
                 // println!("{:?}", e);
-                return Err(String::from("Request failed"))
+                return Err(format!("Download request failed: {:?}", e))
             }
         };
 
@@ -72,7 +72,6 @@ impl Download {
                 Err(TryRecvError::Empty) => {
                     // The actual work goes here
                     let b_start = self.bytes_read;
-                    // let b_size = cmp::min(self.read_size, self.size - self.bytes_read);
                     // println!("start byte: {:?}, in size: {:?}, trying to read {:?}", b_start, buffer.len(), b_size);
                     let mut range_buffer: &mut [u8] = &mut buffer[b_start as usize .. self.size as usize];
                     let _r_size = match res.read(&mut range_buffer) {
@@ -103,17 +102,20 @@ pub struct ParallelDownload {
     downloader_kill_channels: LinkedList<Sender<()>>,
     current_vec: Option<Vec<u8>>,
     chunk_size: u32,
+    thread_count: u32,
     next_start_byte: u64,
     next_read_offset: u64,
     content_length: u64
 }
 
 impl ParallelDownload {
-    pub fn new(url: String) -> ParallelDownload {
+    pub fn new(url: String, chunk_size: u32, thread_count: u32) -> ParallelDownload {
         let client = Client::new();
         let downloader_list:
             LinkedList<JoinHandle<Result<Vec<u8>, String>>> = LinkedList::new();
         let kill_channel_list: LinkedList<Sender<()>> = LinkedList::new();
+        let _cs = if chunk_size < 1 {1} else {chunk_size};
+        let _tc = if thread_count < 1 {1} else {thread_count};
 
         ParallelDownload {
             url: url,
@@ -121,7 +123,8 @@ impl ParallelDownload {
             downloaders: downloader_list,
             downloader_kill_channels: kill_channel_list,
             current_vec: None,
-            chunk_size: 50*1024*1024,  // TODO: configure
+            chunk_size: _cs*1000*1000,
+            thread_count: _tc,
             next_start_byte: 0,
             next_read_offset: 0,
             content_length: 0
@@ -191,8 +194,7 @@ impl ParallelDownload {
         let mut thread_count = 0;
         let mut next_start_byte: u64 = 0;
         let cl = self.content_length;
-        let max = 6;
-        while (thread_count < max) && (next_start_byte < cl) {
+        while (thread_count < self.thread_count) && (next_start_byte < cl) {
             let start_byte: u64 = next_start_byte;
             next_start_byte = match self.try_start_thread(start_byte, cl) {
                 None => cl,
