@@ -4,12 +4,10 @@ extern crate chrono;
 #[macro_use] extern crate hyper;
 
 use docopt::Docopt;
-use hyper::Client;
-use hyper::status::StatusCode;
 
 use std::env;
-use std::io::Read;
-use std::sync::Arc;
+use std::fs::File;
+use std::io::{Read, Write};
 
 mod parallel;
 use parallel::ParallelDownload;
@@ -51,18 +49,7 @@ fn main() {
 
     let url = get_arg(args.flag_url, String::from("RP_URL")).unwrap();
     let out = get_arg(args.flag_output, String::from("RP_OUT")).unwrap();
-
-    let client = Arc::new(Client::new());
-
-    match client.head(&url).send() {
-        Ok(resp) => {
-            assert_eq!(resp.status, StatusCode::NoContent);
-            for item in resp.headers.iter() {
-                println!("{}", item);
-            }
-        }
-        Err(s) => println!("{}", s)
-    };
+    println!("{}", out);
 
     let mut download = ParallelDownload::new(url.clone());
     let sd = download.start_download();
@@ -72,15 +59,41 @@ fn main() {
             std::process::exit(1);
         }
         _ => {
-            // Simple attempt to use the download
-            let mut b = [0,0,0,0];
-            let nr = download.read(&mut b);
-            match nr {
-                Err(_) => println!("{}", "Failed to download"),
-                Ok(n) => println!("{} bytes read", n)
-            }
+            let mut f = match File::create(out) {
+                Err(_) => {
+                    println!("{}", "Failed to create output file");
+                    std::process::exit(1);
+                },
+                Ok(_f) => _f
+            };
 
             // TODO: Download URL and write to 'out'
+            let mut finished = false;
+            while !finished {
+                let mut buffer: [u8; 1024*1024] = [0; 1024*1024];
+                let _read_size = match download.read(&mut buffer) {
+                    Ok(_s) => _s,
+                    Err(_) => {
+                        println!("{}", "Download failed");
+                        download.kill();
+                        std::process::exit(1);
+                    }
+                };
+                if _read_size > 0 {
+                    match f.write_all(&buffer[.. _read_size]) {
+                        Err(_) => {
+                            println!("{}", "Failed to write output");
+                            download.kill();
+                            std::process::exit(1);
+                        },
+                        _ => {
+                            println!("{}", "Saved");
+                        }
+                    }
+                } else {
+                    finished = true;
+                };
+            }
         }
     }
 }
