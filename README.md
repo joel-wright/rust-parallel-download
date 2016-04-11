@@ -1,5 +1,7 @@
 # rust-parallel-download
 
+Learning rust by implementing a basic parallel URL downloader.
+
 ```
     Usage: parallel-url-download <url> [options]
        parallel-url-download (-h | --help)
@@ -11,5 +13,3 @@
       -h, --help               display this help and exit
       -v, --version            output version information and exit
 ```
-
-Learning rust by implementing a basic parallel URL downloader.
