@@ -1,12 +1,47 @@
 use hyper::header::{Headers, Range, ContentLength, ByteRangeSpec};
 use hyper::Client;
+use hyper;
 
 use std::cmp;
 use std::collections::LinkedList;
-use std::io::{Error, ErrorKind, Read};
+use std::error;
+use std::fmt;
+use std::io;
+use std::io::Read;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::thread::JoinHandle;
+
+#[derive(Debug)]
+pub enum DownloadError {
+    Http(hyper::error::Error),
+    Fail(String)
+}
+
+impl fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            DownloadError::Http(ref err) => write!(f, "HTTP error: {}", err),
+            DownloadError::Fail(ref s) => write!(f, "Fail: {}", s),
+        }
+    }
+}
+
+impl error::Error for DownloadError {
+    fn description(&self) -> &str {
+        match *self {
+            DownloadError::Http(ref err) => err.description(),
+            DownloadError::Fail(ref s) => s,
+        }
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        match *self {
+            DownloadError::Http(ref err) => Some(err),
+            DownloadError::Fail(_) => None,
+        }
+    }
+}
 
 pub struct Download {
     client: Client,
@@ -37,7 +72,7 @@ impl Download {
         self.read_size = size;
     }
 
-    pub fn download(&mut self) -> Result<Vec<u8>, String> {
+    pub fn download(&mut self) -> Result<Vec<u8>, DownloadError> {
         // Start performing the actual download
         //
         // Make the request, then read into the local
@@ -57,7 +92,7 @@ impl Download {
             Ok(res) => res,
             Err(e) => {
                 // println!("{:?}", e);
-                return Err(format!("Download request failed: {:?}", e))
+                return Err(DownloadError::Http(e))
             }
         };
 
@@ -80,7 +115,13 @@ impl Download {
                     };  // TODO: range might be smaller
                     self.bytes_read += _r_size as u32;
                     if _r_size == 0 && self.bytes_read < self.size {
-                        return Err(format!("Got no more bytes after reading {}, but expected {}!", self.bytes_read, self.size))
+                        return Err(DownloadError::Fail(
+                            format!(
+                                "Got no more bytes after reading {}, but expected {}!",
+                                self.bytes_read,
+                                self.size
+                            ))
+                        )
                     };
                 }
             };
@@ -98,7 +139,7 @@ impl Download {
 pub struct ParallelDownload {
     url: String,
     client: Client,
-    downloaders: LinkedList<JoinHandle<Result<Vec<u8>, String>>>,
+    downloaders: LinkedList<JoinHandle<Result<Vec<u8>, DownloadError>>>,
     downloader_kill_channels: LinkedList<Sender<()>>,
     current_vec: Option<Vec<u8>>,
     chunk_size: u32,
@@ -112,7 +153,7 @@ impl ParallelDownload {
     pub fn new(url: String, chunk_size: u32, thread_count: u32) -> ParallelDownload {
         let client = Client::new();
         let downloader_list:
-            LinkedList<JoinHandle<Result<Vec<u8>, String>>> = LinkedList::new();
+            LinkedList<JoinHandle<Result<Vec<u8>, DownloadError>>> = LinkedList::new();
         let kill_channel_list: LinkedList<Sender<()>> = LinkedList::new();
         let _cs = if chunk_size < 1 {1} else {chunk_size};
         let _tc = if thread_count < 1 {1} else {thread_count};
@@ -177,16 +218,18 @@ impl ParallelDownload {
         Some(next_start_byte)  // return the next start byte
     }
 
-    pub fn start_download(&mut self) -> Result<(), String> {
+    pub fn start_download(&mut self) -> Result<(), DownloadError> {
         // head to get size and range req support
         let head_resp = try!(match self.client.head(&self.url).send() {
             Ok(r) => Ok(r),
-            _ => Err(String::from("Could not HEAD the given URL"))
+            Err(e) => Err(DownloadError::Http(e))
         });
         // get size from headers
         self.content_length = match head_resp.headers.get() {
             Some(&ContentLength(ref _cl)) => *_cl,  // : & u64
-            None => return Err(String::from("No content length found"))
+            None => return Err(DownloadError::Fail(
+                String::from("No content length found")
+            ))
         };
         //println!("{:?}", self.content_length);
 
@@ -211,7 +254,7 @@ impl ParallelDownload {
 }
 
 impl Read for ParallelDownload {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         // read buf.len() bytes into buf
         // println!("{:?}", self.current_vec);
         match self.current_vec {
@@ -222,10 +265,13 @@ impl Read for ParallelDownload {
                     Some(_dt) => _dt
                 };
                 let d_result: Vec<u8> = match dt_handle.join() {
-                    Err(_e) => {
+                    Err(_) => {
                         self.kill();
                         //println!("{}", "oh no!");
-                        return Err(Error::new(ErrorKind::Other, "oh no!"));
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "Failed to join internal download thread"
+                        ))
                     },
                     Ok(buf) => {
                         // If we've got a result, it's time to kick off
@@ -242,7 +288,10 @@ impl Read for ParallelDownload {
                             Ok(_v) => _v,
                             Err(_es) => {
                                 println!("{}", _es);
-                                return Err(Error::new(ErrorKind::Other, _es))
+                                return Err(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    _es
+                                ))
                             }
                         }
                     }
@@ -254,17 +303,25 @@ impl Read for ParallelDownload {
 
         let (complete, len) = match self.current_vec {
             Some(ref v) => {
-                let nro = self.next_read_offset;
                 // println!("{}", v.len());
+
+                // Read as much as possible from the current Vec
+                let nro = self.next_read_offset;
+                // The max we can read is the size of the data remaining in
+                // the current Vec, or the length of the supplied buffer
                 let _v_len = v.len() - nro as usize;
                 let _len = cmp::min(buf.len(), _v_len);
+                // Always copy into the beginning of the supplied buffer
                 let mut buf_sl = &mut buf[.. _len];
                 let new_nro = nro + _len as u64;
+                // Copy the data from the current Vec into the supplied buffer
                 let current_buf_sl = &v[nro as usize .. new_nro as usize];
                 buf_sl.clone_from_slice(current_buf_sl);
 
                 if new_nro >= v.len() as u64 {
                     // println!("{:?}", "Finished reading buffer");
+                    // Reset the offset to 0 and return that we have completed
+                    // reading from the current buffer
                     self.next_read_offset = 0;
                     (true, _len)
                 } else {
@@ -272,13 +329,19 @@ impl Read for ParallelDownload {
                     (false, _len)
                 }
             },
-            _ => return Err(Error::new(ErrorKind::Other, "...oh no!")),
+            _ => return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "ParallelDownload code should never reach here!"
+            )),
         };
 
         if complete {
+            // Setting the current Vec to None will trigger grabbing the next
+            // download chunk on the next read
             self.current_vec = None;
         }
 
+        // Make sure we return the correct number of bytes read
         Ok(len)
     }
 }

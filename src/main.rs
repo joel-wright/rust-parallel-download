@@ -85,8 +85,8 @@ fn main() {
                 let mut buffer: [u8; 1024*1024] = [0; 1024*1024];
                 let _read_size = match download.read(&mut buffer) {
                     Ok(_s) => _s,
-                    Err(_) => {
-                        println!("Download Failed");
+                    Err(e) => {
+                        println!("Download Failed: {}", e);
                         download.kill();
                         std::process::exit(1);
                     }
