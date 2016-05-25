@@ -5,6 +5,7 @@ use hyper;
 use std::cmp;
 use std::collections::LinkedList;
 use std::error;
+use std::error::Error;
 use std::fmt;
 use std::io;
 use std::io::Read;
@@ -21,8 +22,10 @@ pub enum DownloadError {
 impl fmt::Display for DownloadError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            DownloadError::Http(ref err) => write!(f, "HTTP error: {}", err),
-            DownloadError::Fail(ref s) => write!(f, "Fail: {}", s),
+            DownloadError::Http(ref err) => write!(
+                f, "ParallelDownload HTTP error: {}", err),
+            DownloadError::Fail(ref s) => write!(
+                f, "ParallelDownload Fail: {}", s),
         }
     }
 }
@@ -270,7 +273,7 @@ impl Read for ParallelDownload {
                         //println!("{}", "oh no!");
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
-                            "Failed to join internal download thread"
+                            "ParallelDownload: Failed to join internal download thread"
                         ))
                     },
                     Ok(buf) => {
@@ -285,12 +288,12 @@ impl Read for ParallelDownload {
                             }
                         };
                         match buf {
-                            Ok(_v) => _v,
-                            Err(_es) => {
-                                println!("{}", _es);
+                            Ok(v) => v,
+                            Err(e) => {
+                                //println!("{}", e);
                                 return Err(io::Error::new(
                                     io::ErrorKind::Other,
-                                    _es
+                                    e.description()
                                 ))
                             }
                         }
@@ -331,7 +334,7 @@ impl Read for ParallelDownload {
             },
             _ => return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "ParallelDownload code should never reach here!"
+                "ParallelDownload: We should never reach here!"
             )),
         };
 

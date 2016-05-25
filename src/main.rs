@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 mod parallel;
 use parallel::ParallelDownload;
 
-const VERSION: &'static str = "Parallel URL Download v0.1.0";
+const VERSION: &'static str = "Parallel URL Download v0.2.0";
 const USAGE: &'static str = "
 Usage: parallel-url-download <url> [options]
        parallel-url-download (-h | --help)
